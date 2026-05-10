@@ -1,0 +1,7 @@
+algae
+major_crack
+minor_crack
+peeling
+plain
+spalling
+stain
