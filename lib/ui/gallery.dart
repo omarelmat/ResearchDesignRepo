@@ -33,7 +33,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
   final imagePicker = ImagePicker();
   String? imagePath;
   img.Image? image;
-  Map<String, double>? classification;
+  Map<String, double>? classification;  // extracted from InferenceResult
   bool cameraIsAvailable = Platform.isAndroid || Platform.isIOS;
 
   // Length and width controllers for area calculation
@@ -66,7 +66,8 @@ class _GalleryScreenState extends State<GalleryScreen> {
       // Decode image using package:image/image.dart (https://pub.dev/image)
       image = img.decodeImage(imageData);
       setState(() {});
-      classification = await imageClassificationHelper?.inferenceImage(image!);
+      final result = await imageClassificationHelper?.inferenceImage(image!);
+      classification = result?.classification;
       setState(() {});
     }
   }

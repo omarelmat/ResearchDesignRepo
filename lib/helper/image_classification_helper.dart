@@ -1,19 +1,3 @@
-/*
- * Copyright 2023 The TensorFlow Authors. All Rights Reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *             http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 import 'dart:developer';
 import 'dart:io';
 import 'dart:isolate';
@@ -24,9 +8,10 @@ import 'package:image/image.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 
 import 'isolate_inference.dart';
+import 'cam_helper.dart';
 
 class ImageClassificationHelper {
-  static const modelPath = 'assets/models/limestone_defect_model.tflite';
+  static const modelPath  = 'assets/models/limestone_defect_model_cam.tflite';
   static const labelsPath = 'assets/models/limestone_labels.txt';
 
   late final Interpreter interpreter;
@@ -35,74 +20,55 @@ class ImageClassificationHelper {
   late Tensor inputTensor;
   late Tensor outputTensor;
 
-  // Load model
+  /// Public CAM helper — loaded once, reused everywhere.
+  final camHelper = CamHelper();
+
   Future<void> _loadModel() async {
     final options = InterpreterOptions();
+    if (Platform.isAndroid) options.addDelegate(XNNPackDelegate());
+    if (Platform.isIOS)     options.addDelegate(GpuDelegate());
 
-    // Use XNNPACK Delegate
-    if (Platform.isAndroid) {
-      options.addDelegate(XNNPackDelegate());
-    }
-
-    // Use GPU Delegate
-    // doesn't work on emulator
-    // if (Platform.isAndroid) {
-    //   options.addDelegate(GpuDelegateV2());
-    // }
-
-    // Use Metal Delegate
-    if (Platform.isIOS) {
-      options.addDelegate(GpuDelegate());
-    }
-
-    // Load model from assets
     interpreter = await Interpreter.fromAsset(modelPath, options: options);
-    // Get tensor input shape [1, 224, 224, 3]
-    inputTensor = interpreter.getInputTensors().first;
-    // Get tensor output shape [1, 1001]
-    outputTensor = interpreter.getOutputTensors().first;
-
-    log('Interpreter loaded successfully');
+    inputTensor  = interpreter.getInputTensors().first;
+    // outputTensor refers to the SCORES output (index 1, shape [1,7])
+    outputTensor = interpreter.getOutputTensors()[1];
+    log('CAM model loaded');
   }
 
-  // Load labels from assets
   Future<void> _loadLabels() async {
-    final labelTxt = await rootBundle.loadString(labelsPath);
-    labels = labelTxt.split('\n');
+    final txt = await rootBundle.loadString(labelsPath);
+    labels = txt.split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
   }
 
   Future<void> initHelper() async {
-    _loadLabels();
-    _loadModel();
+    await Future.wait([
+      _loadLabels(),
+      _loadModel(),
+      camHelper.loadWeights(),
+    ]);
     isolateInference = IsolateInference();
     await isolateInference.start();
   }
 
-  Future<Map<String, double>> _inference(InferenceModel inferenceModel) async {
-    ReceivePort responsePort = ReceivePort();
-    isolateInference.sendPort
-        .send(inferenceModel..responsePort = responsePort.sendPort);
-    // get inference result.
-    var results = await responsePort.first;
-    return results;
+  Future<InferenceResult> _inference(InferenceModel model) async {
+    final responsePort = ReceivePort();
+    isolateInference.sendPort.send(model..responsePort = responsePort.sendPort);
+    return await responsePort.first as InferenceResult;
   }
 
-  // inference camera frame
-  Future<Map<String, double>> inferenceCameraFrame(
-      CameraImage cameraImage) async {
-    var isolateModel = InferenceModel(cameraImage, null, interpreter.address,
-        labels, inputTensor.shape, outputTensor.shape);
-    return _inference(isolateModel);
+  Future<InferenceResult> inferenceCameraFrame(CameraImage cameraImage) async {
+    return _inference(InferenceModel(
+      cameraImage, null, interpreter.address,
+      labels, inputTensor.shape, outputTensor.shape,
+    ));
   }
 
-  // inference still image
-  Future<Map<String, double>> inferenceImage(Image image) async {
-    var isolateModel = InferenceModel(null, image, interpreter.address, labels,
-        inputTensor.shape, outputTensor.shape);
-    return _inference(isolateModel);
+  Future<InferenceResult> inferenceImage(Image image) async {
+    return _inference(InferenceModel(
+      null, image, interpreter.address,
+      labels, inputTensor.shape, outputTensor.shape,
+    ));
   }
 
-  Future<void> close() async {
-    isolateInference.close();
-  }
+  Future<void> close() async => isolateInference.close();
 }
